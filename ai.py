@@ -1,13 +1,11 @@
-# ===================== NEXA AI (RENDER DEPLOY READY) =====================
+# ===================== NEXA AI (DUAL AI + WATERMARK) =====================
 
-import os, sqlite3, uuid, time
+import os, sqlite3, uuid, time, requests
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from openai import OpenAI
 
 # ===================== CONFIG =====================
 APP_NAME = "NEXA AI"
-MODEL_NAME = "gpt-4o-mini"   # free tier compatible
 RATE_LIMIT_PER_MIN = 15
 
 # ===================== APP =====================
@@ -34,6 +32,7 @@ CREATE TABLE IF NOT EXISTS limits(
  count INTEGER
 )
 """)
+
 db.commit()
 
 # ===================== SESSION =====================
@@ -73,40 +72,52 @@ def allowed(sid):
     db.commit()
     return True
 
-# ===================== LANGUAGE DETECT =====================
-def detect_language(text: str) -> str:
-    for ch in text:
-        if '\u0600' <= ch <= '\u06FF':
-            return "urdu"
-    if any(w in text.lower() for w in ["kya","hai","ka","ki","ap","tum"]):
-        return "roman"
-    return "english"
-
-# ===================== ONLINE AI =====================
+# ===================== AI SYSTEM =====================
 def online_ai(question: str) -> str:
-    key = os.getenv("OPENAI_API_KEY")
-    if not key:
-        return "API key not set on server."
 
-    lang = detect_language(question)
+    # ---------- OpenRouter ----------
+    try:
+        OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
 
-    system_prompt = {
-        "english": "Reply in clear English.",
-        "urdu": "جواب اردو میں دیں۔",
-        "roman": "Roman Urdu mein jawab dein."
-    }[lang]
+        if OPENROUTER_KEY:
+            headers = {
+                "Authorization": f"Bearer {OPENROUTER_KEY}",
+                "Content-Type": "application/json"
+            }
 
-    client = OpenAI(api_key=key)
+            data = {
+                "model": "openai/gpt-3.5-turbo",
+                "messages": [{"role": "user", "content": question}]
+            }
 
-    res = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": question}
-        ]
-    )
+            r = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=10
+            )
 
-    return res.choices[0].message.content.strip()
+            if r.status_code == 200:
+                return r.json()["choices"][0]["message"]["content"]
+
+    except:
+        pass
+
+    # ---------- HuggingFace Fallback ----------
+    try:
+        API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
+
+        r = requests.post(API_URL, json={"inputs": question}, timeout=15)
+
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list):
+                return data[0]["generated_text"]
+
+        return "⚠ Model busy. Try again."
+
+    except Exception as e:
+        return f"⚠ AI error: {str(e)}"
 
 # ===================== UI =====================
 HTML = """
@@ -116,15 +127,76 @@ HTML = """
 <title>NEXA AI</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body{margin:0;font-family:Arial;background:#020617;color:#fff}
-header{display:flex;justify-content:space-between;padding:15px}
-#chat{padding:10px;height:70vh;overflow:auto}
-.msg{background:#1e293b;margin:10px;padding:10px;border-radius:10px}
+body{
+ margin:0;
+ font-family:Arial;
+ background:#020617;
+ color:#fff;
+ overflow:hidden;
+}
+
+/* Watermark */
+body::before{
+ content:"ISHTIAQ AHMAD MAGRAY";
+ position:fixed;
+ top:50%;
+ left:50%;
+ transform:translate(-50%, -50%) rotate(-30deg);
+ font-size:60px;
+ color:rgba(255,255,255,0.05);
+ white-space:nowrap;
+ pointer-events:none;
+ z-index:0;
+}
+
+header{
+ display:flex;
+ justify-content:space-between;
+ padding:15px;
+ position:relative;
+ z-index:2;
+}
+
+#chat{
+ padding:10px;
+ height:70vh;
+ overflow:auto;
+ position:relative;
+ z-index:2;
+}
+
+.msg{
+ background:#1e293b;
+ margin:10px;
+ padding:10px;
+ border-radius:10px;
+}
+
 .user{color:#38bdf8}
 .ai{color:#a7f3d0}
-.controls{position:fixed;bottom:0;width:100%;background:#020617;padding:10px}
-input{width:65%;padding:10px;border-radius:8px;border:none}
-button{padding:10px;border:none;border-radius:8px}
+
+.controls{
+ position:fixed;
+ bottom:0;
+ width:100%;
+ background:#020617;
+ padding:10px;
+ z-index:2;
+}
+
+input{
+ width:65%;
+ padding:10px;
+ border-radius:8px;
+ border:none;
+}
+
+button{
+ padding:10px;
+ border:none;
+ border-radius:8px;
+ cursor:pointer;
+}
 </style>
 </head>
 <body>
@@ -213,5 +285,3 @@ async def ask(req: Request):
     db.commit()
 
     return {"answer":a}
-
-# ===================== END =====================
